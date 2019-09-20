@@ -3,12 +3,17 @@ package io.onurb.tools.qcsv;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.LineIterator;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.sql.*;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.*;
 
 @Slf4j
@@ -117,12 +122,14 @@ public class QueryRunner {
                     final String colName = "c" + i;
                     final String value = cols.get(i);
 
-                    // TODO: detect date/time formats (which patterns ?)
-                    if (NumberUtils.isParsable(value)) {
-                        colTypes.putIfAbsent(colName, "numeric");
-                    }
-                    else {
-                        colTypes.put(colName, "varchar");
+                    final String type = getType(value);
+
+                    if (type != null) {
+                        if ("varchar".equals(type)) {
+                            colTypes.put(colName, "varchar");
+                        } else {
+                            colTypes.putIfAbsent(colName, type);
+                        }
                     }
 
                     strLenCols.put(colName, Math.max(strLenCols.getOrDefault(colName, 0), value.length()));
@@ -158,7 +165,7 @@ public class QueryRunner {
      * Import the CSV in the database.
      *
      * @throws FileNotFoundException The input has not been found
-     * @throws SQLException Any errors woth the database
+     * @throws SQLException Any errors with the database
      */
     private void importCsv() throws IOException, SQLException {
 
@@ -196,7 +203,13 @@ public class QueryRunner {
                 query.replace(query.length() - 1, query.length(), ") values (");
 
                 for (int i = 0; i < cols.size(); i++) {
-                    if ("varchar".equals(colTypes.get("c" + i))) {
+                    if (StringUtils.isEmpty(cols.get(i))) {
+                        query.append("NULL,");
+                    }
+                    else if ("timestamp".equals(colTypes.get("c" + i))) {
+                        query.append("'").append(cols.get(i).replaceAll("T", " ")).append("',");
+                    }
+                    else if (!"numeric".equals(colTypes.get("c" + i))) {
                         query.append("'").append(cols.get(i)).append("',");
                     }
                     else {
@@ -241,8 +254,29 @@ public class QueryRunner {
      * @return Type
      */
     private static String getType(String value) {
+        if (StringUtils.isEmpty(value)) {
+            return null;
+        }
+
         if (NumberUtils.isParsable(value)) {
             return "numeric";
+        }
+
+        // Detect date patterns
+        try {
+            LocalDate.parse(value, DateTimeFormatter.ISO_DATE);
+            return "date";
+        }
+        catch (DateTimeParseException e) {
+            // ignore
+        }
+
+        try {
+            LocalDateTime.parse(value, DateTimeFormatter.ISO_DATE_TIME);
+            return "timestamp";
+        }
+        catch (DateTimeParseException e) {
+            // ignore
         }
 
         return "varchar";

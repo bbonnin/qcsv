@@ -22,11 +22,11 @@ public class DataGenerator {
             row.delete(0, row.length());
 
             for (int j = 0; j < nbCols; j++) {
-                if (r.nextBoolean()) {
-                    row.append(r.nextFloat());
-                }
-                else {
-                    row.append(faker.food().ingredient());
+                int type = r.nextInt(3);
+                switch (type) {
+                    case 0: row.append(r.nextFloat()); break;
+                    case 1: row.append(faker.food().ingredient()); break;
+                    case 2: row.append(faker.date().birthday()); break;
                 }
 
                 row.append("|");
