@@ -11,6 +11,9 @@ mvn clean package
 
 ```bash
 java -jar /path/to/jar/qcsv.jar \
-  
-
+  -i data.csv -d \| -l 50 -q "select * from t0 where CURRENT_TIMESTAMP > c3"
 ```
+
+## Use in your code
+
+
