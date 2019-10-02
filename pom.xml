@@ -7,6 +7,30 @@
     <groupId>io.onurb.tools</groupId>
     <artifactId>qcsv</artifactId>
     <version>1.0.0</version>
+
+    <name>QCSV</name>
+
+    <description>SQL queries on CSV files</description>
+
+    <contributors>
+        <contributor>
+            <name>hello</name>
+            <email>hello@example.com</email>
+        </contributor>
+    </contributors>
+
+    <licenses>
+        <license>
+            <name>MIT</name>
+        </license>
+    </licenses>
+
+    <url></url>
+
+    <ciManagement>
+
+    </ciManagement>
+
     <build>
         <plugins>
             <plugin>
