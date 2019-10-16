@@ -151,7 +151,14 @@ public class QueryRunner {
                             colTypes.put(colName, "varchar");
                         }
                         else {
-                            colTypes.putIfAbsent(colName, type);
+                            String currentType = colTypes.get(colName);
+
+                            if (currentType != null && !currentType.equals(type)) {
+                                colTypes.put(colName, "varchar"); // On force à varchar
+                            }
+                            else {
+                                colTypes.putIfAbsent(colName, type);
+                            }
                         }
                     }
 
@@ -177,7 +184,7 @@ public class QueryRunner {
 
         createQuery.replace(createQuery.length() - 1, createQuery.length(), ")");
 
-        log.debug("CREATE TABLE QUERY: {}", createQuery);
+        log.info("CREATE TABLE QUERY: {}", createQuery);
 
         final Statement stmt = db.createStatement();
         stmt.executeQuery(createQuery.toString());
@@ -278,8 +285,13 @@ public class QueryRunner {
 
                 log.debug("INSERT QUERY: {}", query);
 
-                final Statement stmt = db.createStatement();
-                stmt.executeQuery(query.toString());
+                try {
+                    final Statement stmt = db.createStatement();
+                    stmt.executeQuery(query.toString());
+                }
+                catch (Exception e) {
+                    log.error("insert " + query, e);
+                }
             }
         }
     }
