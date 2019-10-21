@@ -1,10 +1,13 @@
 package io.onurb.tools.qcsv;
 
-import java.util.List;
-
+import com.beust.jcommander.DynamicParameter;
 import com.beust.jcommander.JCommander;
 import com.beust.jcommander.Parameter;
 import com.beust.jcommander.converters.StringConverter;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 public class QCsv {
 
@@ -12,7 +15,7 @@ public class QCsv {
     private String query;
 
     @Parameter(names = "-d")
-    private String delimiter = QueryRunner.DEFAULT_DELIMITER;
+    private String delimiter = String.valueOf(QueryRunner.DEFAULT_DELIMITER);
 
     @Parameter(names = "-e")
     private String enclosureChar = QueryRunner.DEFAULT_ENCLOSURE_CHAR;
@@ -23,26 +26,22 @@ public class QCsv {
     @Parameter(names = "-l")
     private int maxAnalyzedLines = QueryRunner.DEFAULT_MAX_ANALYZED_LINES;
 
-    @Parameter(names = "-t", converter = StringConverter.class)
-    private List<String> colTypes;
+    @Parameter(names = "-T", converter = StringConverter.class)
+    private List<String> allColTypes;
 
-    public static void main2(String[] args) throws QException {
+    @DynamicParameter(names = "-t")
+    private Map<String, String> colTypes = new HashMap<>();
 
-        System.out.println("''".replaceAll("'", "\\\\'"));
-    }
+    @Parameter(names = "-c")
+    private boolean allTypesAreVarchar = false;
+
+    @Parameter(names = "-s")
+    private boolean skipHeader = false;
+
 
     public static void main(String[] args) throws QException {
 
-        //String delimiter = "\t";
-        //String input = "/Users/bruno/Downloads/11";
-        //String query = "select * from t0 where c2 = 690";
-
-        //String delimiter = "\\|";
-        //String input = "gen-data.csv";
-        //int analyzeMaxLines = 20;
-        //String query = "select * from t0 where c1 = 'Beans'";
-
-        QCsv q = new QCsv();
+        final QCsv q = new QCsv();
 
         JCommander.newBuilder()
                 .addObject(q)
@@ -54,14 +53,19 @@ public class QCsv {
 
     private void run() {
         try {
-            System.out.println("Paramters:");
+            System.out.println("Parameters:");
             System.out.println("\tInput file: " + input);
             System.out.println("\tQuery: " + query);
             System.out.println("\tDelimiter: " + delimiter);
             System.out.println("\tEnclosure char: " + enclosureChar);
             System.out.println("\tMax analyzed lines: " + maxAnalyzedLines);
             System.out.println("\tColumn types: " + colTypes);
-            final QueryRunner runner = new QueryRunner(input, delimiter, enclosureChar, maxAnalyzedLines, query, colTypes);
+            System.out.println("\tAll column types: " + allColTypes);
+            System.out.println("\tConsider all types as varchar: " + allTypesAreVarchar);
+            System.out.println("\tSkip header: " + skipHeader);
+
+            final QueryRunner runner = new QueryRunner(input, delimiter.charAt(0), enclosureChar, maxAnalyzedLines,
+                    query, allColTypes, colTypes, allTypesAreVarchar, skipHeader);
             runner.run();
         }
         catch (QException e) {
