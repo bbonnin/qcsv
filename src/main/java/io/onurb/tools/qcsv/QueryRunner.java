@@ -1,24 +1,34 @@
 package io.onurb.tools.qcsv;
 
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.csv.CSVFormat;
-import org.apache.commons.csv.CSVRecord;
+
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
+import org.joda.time.LocalDate;
+import org.joda.time.LocalDateTime;
+import org.joda.time.format.DateTimeFormat;
+import org.joda.time.format.DateTimeFormatter;
+import org.joda.time.format.ISODateTimeFormat;
 
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileNotFoundException;
-import java.io.FileReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.Reader;
 import java.sql.*;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeParseException;
 import java.util.*;
+
+import com.opencsv.CSVParserBuilder;
+import com.opencsv.CSVReader;
+import com.opencsv.CSVReaderBuilder;
+
 
 @Slf4j
 public class QueryRunner {
+
+    public static final String DEFAULT_ENCODING = "UTF-8";
 
     public static final String DEFAULT_ENCLOSURE_CHAR = "";
 
@@ -28,11 +38,15 @@ public class QueryRunner {
 
     private static final int VARCHAR_SIZE_RATIO = 4;
 
-    private static final DateTimeFormatter SIMPLE_DATE = DateTimeFormatter.ofPattern("dd/MM/yyyy");
+    private static final DateTimeFormatter SIMPLE_DATE = DateTimeFormat.forPattern("dd/MM/yyyy");
 
-    private static final DateTimeFormatter HSQLDB_DATE = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+    private static final DateTimeFormatter HSQLDB_DATE = DateTimeFormat.forPattern("yyyy-MM-dd");
+
+    private static final String DEFAULT_VARCHAR = "varchar(200)";
 
     private final String input;
+
+    private final String encoding;
 
     private final int maxAnalyzedLines;
 
@@ -59,13 +73,24 @@ public class QueryRunner {
     /** Skip header. */
     private boolean skipHeader;
 
+    private String database;
+
     /**
      * Constructor.
      * @param input CSV file name
      * @param query SQL query to execute
      */
     public QueryRunner(String input, String query) throws QException {
-        this(input, DEFAULT_DELIMITER, DEFAULT_ENCLOSURE_CHAR, DEFAULT_MAX_ANALYZED_LINES, query, null, null, false, false);
+        this(input, DEFAULT_ENCODING, DEFAULT_DELIMITER, DEFAULT_ENCLOSURE_CHAR, DEFAULT_MAX_ANALYZED_LINES, query, null, null, false, false);
+    }
+
+    /**
+     * Constructor.
+     * @param input CSV file name
+     * @param query SQL query to execute
+     */
+    public QueryRunner(String input, String encoding, char delimiter, String query) throws QException {
+        this(input, encoding, delimiter, DEFAULT_ENCLOSURE_CHAR, DEFAULT_MAX_ANALYZED_LINES, query, null, null, true, false);
     }
 
     /**
@@ -76,7 +101,7 @@ public class QueryRunner {
      * @param maxAnalyzedLines Max number of lines used to analyze the csv (to detect types, ...)
      * @param query SQL query to execute
      */
-    public QueryRunner(String input, char delimiter, String enclosureChar, int maxAnalyzedLines,
+    public QueryRunner(String input, String encoding, char delimiter, String enclosureChar, int maxAnalyzedLines,
                        String query, List<String> allColTypes, Map<String, String> providedColTypes,
                        boolean allTypesAreVarchar, boolean skipHeader) throws QException {
 
@@ -86,10 +111,20 @@ public class QueryRunner {
         }
 
         this.input = input;
+
+        // Some queries can contain the csv file name in the query (old queries for q.py)
+        //
+        if (query.contains(this.input)) {
+            this.query = query.replace(input, "csv");
+        }
+        else {
+            this.query = query;
+        }
+
+        this.encoding = encoding == null ? DEFAULT_ENCODING : encoding;
         this.delimiter = delimiter;
         this.enclosureChar = enclosureChar;
         this.maxAnalyzedLines = maxAnalyzedLines;
-        this.query = query;
         this.allTypesAreVarchar = allTypesAreVarchar;
         this.skipHeader = skipHeader;
 
@@ -100,22 +135,130 @@ public class QueryRunner {
             }
         }
 
+        if (allTypesAreVarchar) {
+            // Just add the first column type, the other ones will be added during insertion
+            colTypes.put("c1", DEFAULT_VARCHAR);
+        }
+
         try {
-            this.db = DriverManager.getConnection("jdbc:hsqldb:mem:qcsv", "SA", "");
+            this.database = System.getProperty("java.io.tmpdir") + "/qcsv_db_" + System.currentTimeMillis();
+            this.db = DriverManager.getConnection("jdbc:hsqldb:file:" + database + "/qcsv","SA", "");
         }
         catch (SQLException e) {
             throw new QException("Database connection", e);
         }
     }
 
+    public void clean() {
+        try {
+
+            this.db.createStatement().execute("shutdown");
+            this.db.close();
+            log.info("Delete " + this.database);
+
+
+
+
+            File dir = new File(this.database);
+            if (dir.exists()) {
+                FileUtils.deleteDirectory(dir);
+                boolean res = dir.delete();
+                log.info("Delete " + this.database + ": " + res);
+            }
+        } catch (SQLException | IOException e) {
+            log.error("Close the DB", e);
+        }
+    }
+
     /**
      * Start the execution of the query.
      *
+     * @return Result set of the query
      * @throws QException
      */
-    public void run() throws QException {
+    public ResultSet run() throws QException {
         prepareExecution();
-        executeQuery();
+
+        try {
+            Statement stmt = db.createStatement();
+            //String fct = "CREATE FUNCTION s2f(s " + DEFAULT_VARCHAR + ") returns float no sql language java parameter style java external name 'CLASSPATH:" + Convert.class.getName() + ".toFloat'";
+            String fct = "create function tof(s " + DEFAULT_VARCHAR + ") returns float return to_number(replace(s, ',', '.'))";
+            log.info(fct);
+            stmt.execute(fct);
+
+            fct = "CREATE FUNCTION toyyyymmdd(s " + DEFAULT_VARCHAR + ") RETURNS " + DEFAULT_VARCHAR +
+                    " RETURN substr(s, 7, 4) || '-' || substr(s, 4, 2) || '-' || substr(s, 1, 2)";
+            log.info(fct);
+            stmt.execute(fct); // 06/07/2016 => 2016-07-06
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+
+        final ResultSet resultSet = executeQuery();
+
+        return resultSet;
+    }
+
+    /**
+     * Start the execution of the query and get the result as it is a count.
+     *
+     * @return Count result
+     * @throws QException
+     */
+    public Integer count() throws QException {
+        Integer count = null;
+
+        try {
+            final ResultSet resultSet = run();
+
+            if (resultSet != null && resultSet.next()) {
+                count = resultSet.getInt(1);
+            }
+        }
+        catch (SQLException e) {
+            log.error("Get result of a count", e);
+        }
+        finally {
+            clean();
+        }
+
+        return count;
+    }
+
+    /**
+     * Start the execution of the query and get the result as a list of rows (using the provided delimiter).
+     *
+     * @return String with the rows
+     * @throws QException
+     */
+    public String getRows() throws QException {
+        final ResultSet resultSet = run();
+        final StringBuilder buffer = new StringBuilder();
+
+        try {
+            if (resultSet != null) {
+                final ResultSetMetaData metadata = resultSet.getMetaData();
+
+                while (resultSet.next()) {
+                    for (int i = 1; i <= metadata.getColumnCount(); i++) {
+                        final Object val = resultSet.getObject(i);
+                        buffer.append(val == null ? "" : val).append(this.delimiter);
+                    }
+
+                    buffer.delete(buffer.length() - 1, buffer.length()).append('\n');
+                }
+
+                buffer.delete(buffer.length() - 1, buffer.length());
+            }
+            else {
+                System.err.println("No result");
+            }
+        }
+        catch (SQLException e) {
+            log.error("Get result as a string", e);
+        }
+
+        return buffer.toString();
     }
 
     /**
@@ -124,7 +267,7 @@ public class QueryRunner {
     private void prepareExecution() throws QException {
         try {
             if (colTypes.size() > 0) {
-                System.out.println("No need to analyze: types have been provided");
+                log.info("No need to analyze: types have been provided");
             } else {
                 analyzeCsv();
             }
@@ -145,22 +288,23 @@ public class QueryRunner {
      */
     private void analyzeCsv() throws IOException, SQLException {
 
-        System.out.println("\nAnalyze CSV...");
+        log.info("Analyze the CSV file: {}", input);
 
         // First, read the first n lines for detecting number of columns, types of the columns
         //
-        try (final Reader inputFile = new FileReader(input)) {
+        try (final Reader inputFile = new InputStreamReader(new FileInputStream(input), encoding)) {
 
-            final Iterable<CSVRecord> records = getRecords(inputFile);
+            final CSVReader csvReader = getCsvReader(inputFile);
+            String[] record;
 
-            for (CSVRecord record : records) {
-                if (record.getRecordNumber() > maxAnalyzedLines) break;
+            while ((record = csvReader.readNext()) != null) {
+                if (csvReader.getLinesRead() > maxAnalyzedLines) break;
 
-                nbCols = Math.max(nbCols, record.size());
+                nbCols = Math.max(nbCols, record.length);
 
-                for (int i = 0; i < record.size(); i++) {
+                for (int i = 0; i < record.length; i++) {
                     final String colName = "c" + (i + 1);
-                    final String value = getValue(record.get(i));
+                    final String value = getValue(record[i]);
                     final String type = getType(value);
                     log.debug("Type for {}: {}", value, type);
 
@@ -173,24 +317,26 @@ public class QueryRunner {
                             if (currentType != null && !currentType.equals(type)) {
                                 colTypes.put(colName, "varchar"); // On force à varchar
                             } else {
-                                colTypes.putIfAbsent(colName, type);
+                                putIfAbsent(colTypes, colName, type);
+                                //colTypes.putIfAbsent(colName, type); //TODO: Java 8
                             }
                         }
                     }
 
-                    strLenCols.put(colName, Math.max(strLenCols.getOrDefault(colName, 0), value.length()));
+                    //strLenCols.put(colName, Math.max(strLenCols.getOrDefault(colName, 0), value.length())); //TODO: Java 8
+                    strLenCols.put(colName, Math.max(strLenCols.containsKey(colName) ? strLenCols.get(colName) : 0, value.length()));
                 }
             }
         }
 
-        log.debug("nbCols = {}", nbCols);
-        log.debug("strLenCols = {}", strLenCols);
-        log.debug("colTypes = {}", colTypes);
+        log.info("nbCols = {}", nbCols);
+        log.info("strLenCols = {}", strLenCols);
+        log.info("colTypes = {}", colTypes);
     }
 
     private void createTable() throws SQLException {
 
-        System.out.println("\nCreate table...");
+        log.info("Create the table");
 
         if (nbCols == -1) {
             nbCols = colTypes.size();
@@ -198,7 +344,7 @@ public class QueryRunner {
 
         // Build the "create table..." query
         //
-        final StringBuilder createQuery = new StringBuilder("create table csv (");
+        final StringBuilder createQuery = new StringBuilder("create cached table csv (");
 
         for (int i = 0; i < nbCols; i++) {
             final String colName = "c" + (i+1);
@@ -208,9 +354,10 @@ public class QueryRunner {
 
         createQuery.replace(createQuery.length() - 1, createQuery.length(), ")");
 
-        log.info("CREATE TABLE QUERY: {}", createQuery);
+        log.debug("CREATE TABLE QUERY: {}", createQuery);
 
         final Statement stmt = db.createStatement();
+        stmt.executeQuery("drop table csv if exists");
         stmt.executeQuery(createQuery.toString());
     }
 
@@ -249,24 +396,31 @@ public class QueryRunner {
      */
     private void importCsv() throws IOException, SQLException {
 
-        System.out.println("\nLoad CSV...");
+        log.info("Load the CSV");
 
         int nbInserts = 0;
         int nbErrors = 0;
         long start = System.currentTimeMillis();
 
-        try (final Reader inputFile = new FileReader(input)) {
+        try (final Reader inputFile = new InputStreamReader(new FileInputStream(input), encoding)) {
 
-            final Iterable<CSVRecord> records = getRecords(inputFile);
+            final CSVReader csvReader = getCsvReader(inputFile);
+            String[] record;
 
-            for (CSVRecord record : records) {
+            final Statement stmt = db.createStatement();
+            stmt.execute("SET FILES LOG FALSE;");
 
-                if (record.size() > nbCols) {
+            while ((record = csvReader.readNext()) != null) {
+                if (csvReader.getLinesRead() % 1000 == 0) {
+                    log.debug("Load " + csvReader.getLinesRead() + " lines");
+                }
+
+                if (record.length > nbCols) {
                     // EXPERIMENTAL: when the number of columns is exceeded, create a ALTER TABLE for adding column
 
-                    for (int i = nbCols; i < record.size(); i++) {
+                    for (int i = nbCols; i < record.length; i++) {
                         final StringBuilder alterSql = new StringBuilder("alter table csv add ");
-                        final String value = getValue(record.get(i));
+                        final String value = getValue(record[i]);
                         final String type = getType(value);
                         final String colName = "c" + (i+1);
 
@@ -274,24 +428,25 @@ public class QueryRunner {
 
                         alterSql.append(colName).append(" ").append(getSqlType(colName, type, value.length()));
 
-                        final Statement stmt = db.createStatement();
-                        stmt.executeQuery(alterSql.toString());
+                        final Statement updateStmt = db.createStatement();
+                        log.debug("UPDATE TABLE QUERY: " + alterSql);
+                        updateStmt.executeQuery(alterSql.toString());
                     }
 
-                    nbCols = record.size();
+                    nbCols = record.length;
                 }
 
                 final StringBuilder query = new StringBuilder();
                 query.append("insert into csv (");
 
-                for (int i = 0; i < record.size(); i++) {
+                for (int i = 0; i < record.length; i++) {
                     query.append("c" + (i+1) + ",");
                 }
 
                 query.replace(query.length() - 1, query.length(), ") values (");
 
-                for (int i = 0; i < record.size(); i++) {
-                    String value = getValue(record.get(i));
+                for (int i = 0; i < record.length; i++) {
+                    String value = getValue(record[i]);
                     String colName = "c" + (i+1);
 
                     if (StringUtils.isEmpty(value)) {
@@ -316,22 +471,19 @@ public class QueryRunner {
                 log.debug("INSERT QUERY: {}", query);
 
                 try {
-                    final Statement stmt = db.createStatement();
-                    stmt.executeQuery(query.toString());
+                    stmt.executeQuery(query.toString()); //TODO: batch mode
                     nbInserts++;
                 }
                 catch (Exception e) {
                     nbErrors++;
-                    log.error("insert " + query, e);
+                    log.error("Bulk insert", e);
                 }
             }
         }
 
-        System.out.println("End of load !");
+
         final long time = System.currentTimeMillis() - start;
-        System.out.println("\tTime: " + (time/1000) + " s (" + time + " ms)");
-        System.out.println("\tNb inserts: " + nbInserts);
-        System.out.println("\tNb errors: " + nbErrors);
+        log.info("End of load ! Time: {} s ({} ms), nb inserts: {}, nb errors: {}", (time/1000), time, nbInserts, nbErrors);
     }
 
     /**
@@ -339,58 +491,66 @@ public class QueryRunner {
      *
      * @throws QException Any error with the processing
      */
-    private void executeQuery() throws QException { //TODO: what kind of output ? Map ? ResultSet ?
+    private ResultSet executeQuery() throws QException {
+        log.info("Query execution: " + query);
+
+        ResultSet resultSet;
+
         try {
-            System.out.println("\nQuery execution...");
+
             final Statement stmt = db.createStatement();
-            final ResultSet resultSet = stmt.executeQuery(query);
-            final ResultSetMetaData metadata = resultSet.getMetaData();
-
-            System.out.println("\nResult:");
-
-            int l = 1;
-
-            while (resultSet.next()) {
-                final StringBuilder result = new StringBuilder();
-                result.append(l++).append(" | ");
-                for (int i = 1; i <= metadata.getColumnCount(); i++) {
-                    result.append(resultSet.getObject(i)).append(" | ");
-                }
-                System.out.println(result.delete(result.length() - 3, result.length()));
-            }
+            resultSet = stmt.executeQuery(query);
         }
         catch (SQLException e) {
             throw new QException("Query execution", e);
         }
+
+        log.info("End of the query execution");
+
+        return resultSet;
     }
 
-    private String convertDateFormat(String value, String type) {
+    /**
+     * Convert a date as string to a date formatted for HSQLDB.
+     *
+     * TODO: utilisation des nouvelles classes DateXXX lors du passage à Java 8
+     *
+     * @param value Value of the date
+     * @param type Type of date
+     * @return String with date
+     */
+    private static String convertDateFormat(String value, String type) {
         try {
             if ("isodate".equals(type)) {
-                return HSQLDB_DATE.format(DateTimeFormatter.ISO_DATE.parse(value));
+                return HSQLDB_DATE.print(ISODateTimeFormat.date().parseLocalDate(value)); //.format(DateTimeFormatter.ISO_DATE.parse(value));
             }
             if ("basicdate".equals(type)) {
-                return HSQLDB_DATE.format(DateTimeFormatter.BASIC_ISO_DATE.parse(value));
+                return HSQLDB_DATE.print(ISODateTimeFormat.basicDate().parseLocalDate(value)); //.format(DateTimeFormatter.BASIC_ISO_DATE.parse(value));
             }
             if ("simpledate".equals(type)) {
-                return HSQLDB_DATE.format(SIMPLE_DATE.parse(value));
+                return HSQLDB_DATE.print(SIMPLE_DATE.parseLocalDate(value)); //.format(SIMPLE_DATE.parse(value));
             }
         }
-        catch (DateTimeParseException e) {
+        catch (IllegalArgumentException e) {
             log.error("Convert " + value, e);
         }
 
         return value;
     }
 
-
     /**
      * Return the sql type according to the content of the column.
+     *
+     * TODO: utilisation des nouvelles classes DateXXX lors du passage à Java 8
      *
      * @param value Value of the column
      * @return Type
      */
-    private static String getType(String value) {
+    private String getType(String value) {
+        if (allTypesAreVarchar) {
+            return "varchar";
+        }
+
         if (StringUtils.isEmpty(value)) {
             return null;
         }
@@ -401,18 +561,18 @@ public class QueryRunner {
 
         // Detect date patterns
         try {
-            LocalDate.parse(value, DateTimeFormatter.ISO_DATE);
+            LocalDate.parse(value, ISODateTimeFormat.date());
             return "isodate";
         }
-        catch (DateTimeParseException e) {
+        catch (IllegalArgumentException e) {
             // ignore
         }
 
         try {
-            LocalDate.parse(value, DateTimeFormatter.BASIC_ISO_DATE);
+            LocalDate.parse(value, ISODateTimeFormat.basicDate());
             return "basicdate";
         }
-        catch (DateTimeParseException e) {
+        catch (IllegalArgumentException e) {
             // ignore
         }
 
@@ -420,7 +580,7 @@ public class QueryRunner {
             LocalDate.parse(value, SIMPLE_DATE);
             return "simpledate";
         }
-        catch (DateTimeParseException e) {
+        catch (IllegalArgumentException e) {
             // ignore
         }
 
@@ -428,16 +588,16 @@ public class QueryRunner {
             LocalDate.parse(value, HSQLDB_DATE);
             return "date";
         }
-        catch (DateTimeParseException e) {
+        catch (IllegalArgumentException e) {
             // ignore
         }
 
 
         try {
-            LocalDateTime.parse(value, DateTimeFormatter.ISO_DATE_TIME);
+            LocalDateTime.parse(value, ISODateTimeFormat.dateHourMinuteSecond());
             return "timestamp";
         }
-        catch (DateTimeParseException e) {
+        catch (IllegalArgumentException e) {
             // ignore
         }
 
@@ -453,17 +613,23 @@ public class QueryRunner {
      * @return SQL type
      */
     private String getSqlType(String colName, String type, Integer size) {
+        if (allTypesAreVarchar) {
+            return DEFAULT_VARCHAR;
+        }
+
         if (type == null) {
             // Empty field
             type = "varchar";
             size = 50;
 
-            strLenCols.putIfAbsent(colName, size);
-            colTypes.putIfAbsent(colName, type);
+            putIfAbsent(strLenCols, colName, size);
+            putIfAbsent(colTypes, colName, type);
+            //strLenCols.putIfAbsent(colName, size); //TODO: Java 8
+            //colTypes.putIfAbsent(colName, type); //TODO: Java 8
         }
 
         if ("varchar".equals(type)) {
-            if (size == null) {
+            if (size == null || size == 0) {
                 size = 50;
             }
             return "varchar(" + (size * VARCHAR_SIZE_RATIO) + ")";
@@ -480,17 +646,29 @@ public class QueryRunner {
         return type;
     }
 
-    private Iterable<CSVRecord> getRecords(Reader inputFile) throws IOException {
-        CSVFormat csvFormat = CSVFormat.DEFAULT
-                .withDelimiter(delimiter)
-                .withIgnoreEmptyLines();
+    private CSVReader getCsvReader(Reader inputFile) {
+        final CSVParserBuilder parserBuilder = new CSVParserBuilder()
+                .withSeparator(delimiter)
+                .withIgnoreQuotations(true);
 
-        if (skipHeader) {
-            csvFormat = csvFormat.withFirstRecordAsHeader();
+        if (enclosureChar.length() > 0) {
+            parserBuilder.withQuoteChar(enclosureChar.charAt(0));
         }
 
-        final Iterable<CSVRecord> records = csvFormat.parse(inputFile);
+        final CSVReader csvReader = new CSVReaderBuilder(inputFile)
+                .withCSVParser(parserBuilder.build())
+                .withMultilineLimit(1)
+                .build();
 
-        return records;
+        return csvReader;
+    }
+
+    /**
+     * Method to remove when this code will be compiled with Java 8.
+     */
+    private void putIfAbsent(Map map, Object key, Object value) {
+        if (!map.containsKey(key)) {
+            map.put(key, value);
+        }
     }
 }
