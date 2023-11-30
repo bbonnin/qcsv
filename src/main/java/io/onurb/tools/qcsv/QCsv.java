@@ -60,7 +60,7 @@ public class QCsv {
     }
 
     private void run() {
-        QueryRunner runner = null;
+        QueryRunner runner;
 
         try {
             System.out.println("Parameters:");

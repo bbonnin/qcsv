@@ -8,9 +8,9 @@ import java.util.Random;
 
 public class DataGenerator {
 
-    private static Faker faker = new Faker();
+    private static final Faker faker = new Faker();
 
-    private static Random r = new Random();
+    private static final Random r = new Random();
 
     public static void main(String[] args) throws IOException {
 
@@ -24,9 +24,9 @@ public class DataGenerator {
             for (int j = 0; j < nbCols; j++) {
                 int type = r.nextInt(3);
                 switch (type) {
-                    case 0: row.append(r.nextFloat()); break;
-                    case 1: row.append(faker.food().ingredient()); break;
-                    case 2: row.append(faker.date().birthday()); break;
+                    case 0 -> row.append(r.nextFloat());
+                    case 1 -> row.append(faker.food().ingredient());
+                    case 2 -> row.append(faker.date().birthday());
                 }
 
                 row.append("|");

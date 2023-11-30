@@ -62,10 +62,10 @@ public class QueryRunner {
     private int nbCols = -1;
 
     /** Max length of the value found for each column. */
-    private Map<String, Integer> strLenCols = new HashMap<>();
+    private final Map<String, Integer> strLenCols = new HashMap<>();
 
     /** Type of each column. */
-    private Map<String, String> colTypes = new HashMap<>();
+    private final Map<String, String> colTypes = new HashMap<>();
 
     /** Consider all types as varchar. */
     private boolean allTypesAreVarchar;
